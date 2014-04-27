@@ -33,7 +33,7 @@ util        = require('util'),
 express     = require('express'),
 helper      = require('./lib/helper'),
 uuid            = require('node-uuid'),
-utils = require('express/node_modules/connect/lib/utils'),
+utils = require(__dirname + '/../node_modules/connect/lib/utils.js'),
 cdn      = require('./lib/cdn'),
 // restful models
 restResources = ['bip', 'channel', 'domain', 'account_option'],
@@ -114,6 +114,7 @@ function publicFilter(modelName, modelStruct) {
  * if fails, defers to http basic auth.
  */
 function restAuthWrapper(req, res, cb) {
+console.log('TRYING TO AUTH')  ;
   return express.basicAuth(function(user, pass, cb){
     if (req.session.account && req.session.account.username === user) { 
       dao.getAccountStruct(req.session.account, function(err, accountInfo) {
@@ -183,6 +184,7 @@ var restResponse = function(res) {
     } else {
       res.send(!code ? '200' : code, payload);
     }
+    res.end();
     return;
   }
 }
@@ -456,25 +458,25 @@ function bipAuthWrapper(req, res, cb) {
 
 
 module.exports = {
-  init : function(express, _dao) {
+  init : function(router, _dao) {
     dao = _dao;
     modelPublicFilter = _dao.getModelPublicFilters();
 
-    express.post( '/rest/:resource_name', restAuthWrapper, restAction);
-    express.get( '/rest/:resource_name/:id?', restAuthWrapper, restAction);
-    express.get( '/rest/:resource_name/:id?/:subresource_id?', restAuthWrapper, restAction);
-    express.put( '/rest/:resource_name/:id?', restAuthWrapper, restAction);
-    express.del( '/rest/:resource_name/:id', restAuthWrapper, restAction);
-    express.patch( '/rest/:resource_name/:id', restAuthWrapper, restAction);
+    router.post( '/rest/:resource_name', restAuthWrapper, restAction);
+    router.get( '/rest/:resource_name/:id?', restAuthWrapper, restAction);
+    router.get( '/rest/:resource_name/:id?/:subresource_id?', restAuthWrapper, restAction);
+    router.put( '/rest/:resource_name/:id?', restAuthWrapper, restAction);
+    router['delete']( '/rest/:resource_name/:id', restAuthWrapper, restAction);
+    router.patch( '/rest/:resource_name/:id', restAuthWrapper, restAction);
 
-    express.options('*', function(req, res) {
+    router.options('*', function(req, res) {
       res.send(200);
     });
 
     /**
          * Pass through HTTP Bips
          */
-    express.all('/bip/http/:bip_name', bipAuthWrapper, function(req, res) {
+    router.all('/bip/http/:bip_name', bipAuthWrapper, function(req, res) {
       var txId = uuid.v4(),
       client = getClientInfo(req, txId),
       files = [],
@@ -554,7 +556,7 @@ module.exports = {
       })(req, res, bipName, domain, client, files);
     });
 
-    express.get('/rpc/describe/:model/:model_subdomain?', restAuthWrapper, function(req, res) {
+    router.get('/rpc/describe/:model/:model_subdomain?', restAuthWrapper, function(req, res) {
       var model = req.params.model,
       model_subdomain = req.params.model_subdomain;
       res.contentType(DEFS.CONTENTTYPE_JSON);
@@ -565,7 +567,7 @@ module.exports = {
     /**
      * DomainAuth channel renderer
      */
-    express.get('/rpc/render/channel/:channel_id/:renderer', restAuthWrapper, function(req, res) {
+    router.get('/rpc/render/channel/:channel_id/:renderer', restAuthWrapper, function(req, res) {
      
       var domain = helper.getDomain(req.headers.host, true);
       (function(domain, req, res) {
@@ -604,7 +606,7 @@ module.exports = {
     /**
      * Account Auth RPC, sets up oAuth for the selected pod, if the pod supports oAuth
      */
-    express.all('/rpc/oauth/:pod/:auth_method', restAuthWrapper, function(req, res) {
+    router.all('/rpc/oauth/:pod/:auth_method', restAuthWrapper, function(req, res) {
       var podName = req.params.pod,
       pod = dao.pod(podName),
       method = req.params.auth_method;
@@ -622,7 +624,7 @@ module.exports = {
     /**
          * Account Auth RPC, sets up issuer_token (API keypair) for the selected pod, if the pod supports issuer_token
          */
-    express.all('/rpc/issuer_token/:pod/:auth_method', restAuthWrapper, function(req, res) {
+    router.all('/rpc/issuer_token/:pod/:auth_method', restAuthWrapper, function(req, res) {
       var podName = req.params.pod,
       pod = dao.pod(podName),
       method = req.params.auth_method;
@@ -633,7 +635,7 @@ module.exports = {
       }
     });
     
-    express.get('/rpc/pod/:pod/render/:method', restAuthWrapper, function(req, res) {
+    router.get('/rpc/pod/:pod/render/:method', restAuthWrapper, function(req, res) {
        (function(req, res) {
         var method = req.params.method
           accountInfo = req.remoteUser,
@@ -663,7 +665,7 @@ module.exports = {
     /**
       * Pass through an RPC call to a pod
       */
-    express.get('/rpc/pod/:pod/:action/:method/:channel_id?', restAuthWrapper, function(req, res) {
+    router.get('/rpc/pod/:pod/:action/:method/:channel_id?', restAuthWrapper, function(req, res) {
       (function(req, res) {
         var pod = dao.pod(req.params.pod);
         action = req.params.action,
@@ -714,7 +716,7 @@ module.exports = {
     // ----------------------------------------------------------- CATCHALLS
 
     // RPC Catchall
-    express.get('/rpc/:method_domain?/:method_name?/:resource_id?/:subresource_id?', restAuthWrapper, function(req, res) {
+    router.get('/rpc/:method_domain?/:method_name?/:resource_id?/:subresource_id?', restAuthWrapper, function(req, res) {
 
       res.contentType(DEFS.CONTENTTYPE_JSON);
       var response = {};
@@ -874,7 +876,7 @@ module.exports = {
       }
     });
 
-    express.get('/login', function(req, res) {
+    router.get('/login', function(req, res) {
       var authorization = req.headers.authorization;
 
       if (!authorization) {
@@ -917,12 +919,13 @@ module.exports = {
       });  
     });
 
-    express.get('/logout', function(req, res) {
+    router.get('/logout', function(req, res) {
       req.session.destroy();
       res.send(200);
     });
 
-    express.all('*', function(req, res, next) {
+    router.use(function(req, res, next) {
+console.log(req.method);      
       if (req.method == 'OPTIONS') {
         res.send(200);
       } else

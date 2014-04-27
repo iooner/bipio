@@ -28,12 +28,17 @@ var bootstrap = require(__dirname + '/bootstrap'),
 app = bootstrap.app,
 cluster = require('cluster'),
 express = require('express'),
+session = require('express-session'),
+cookieParser = require('cookie-parser'),
+bodyParser = require('body-parser'),
+jsonp = require('json-middleware'),
+methodOverride = require('method-override'),
 helper  = require('./lib/helper'),
 passport = require('passport'),
 cron = require('cron'),
 restapi = express();
-MongoStore = require('connect-mongo')(express);
-connectUtils = require('express/node_modules/connect/lib/utils');
+MongoStore = require('connect-mongo')({ session : session});
+connectUtils = require(__dirname + '/../node_modules/connect/lib/utils.js');
 
 /**
  * express bodyparser looks broken or too strict.
@@ -81,48 +86,46 @@ function setCORS(req, res, next) {
   next();
 }
 
-// express preflight
-restapi.configure(function() {
-  restapi.use(xmlBodyParser);
-  // respond with an error if body parser failed
-  restapi.use(function(err, req, res, next) {
-    console.log(err);
-    if (err.status == 400) {
-      restapi.logmessage(err, 'error');
-      res.send(err.status, {
-        message : 'Invalid JSON. ' + err
-      });
-    } else {
-      next(err, req, res, next);
-    }
-  });
+// express preflights
 
-  restapi.use(express.bodyParser());
-  restapi.use(setCORS);
-  restapi.use(express.methodOverride());
-  restapi.use(express.cookieParser());
+restapi.use(xmlBodyParser);
 
-  // required for some oauth provders
-
-  restapi.use(express.session({
-    key : 'sid',
-    cookie: {
-      maxAge: 60 * 60 * 1000,
-      httpOnly : true
-    },
-    secret: GLOBAL.CFG.server.sessionSecret,
-    store: new MongoStore({      
-      mongoose_connection : app.dao.getConnection()
-    })
-  }));
-
-  restapi.use(passport.initialize());
-  restapi.use(passport.session());
-  restapi.use('jsonp callback', true );
-  //restapi.use(express.errorHandler( { dumpExceptions : false, showStack : false}));
-  restapi.use(errorHandler);
-  restapi.disable('x-powered-by');
+// respond with an error if body parser failed
+restapi.use(function(err, req, res, next) {
+  console.log(err);
+  if (err.status == 400) {
+    restapi.logmessage(err, 'error');
+    res.send(err.status, {
+      message : 'Invalid JSON. ' + err
+    });
+  } else {
+    next(err, req, res, next);
+  }
 });
+
+restapi.use(bodyParser());
+restapi.use(setCORS);
+restapi.use(methodOverride());
+restapi.use(cookieParser());
+
+// required for some oauth provders
+
+restapi.use(session({
+  key : 'sid',
+  cookie: {
+    maxAge: 60 * 60 * 1000,
+    httpOnly : true
+  },
+  secret: GLOBAL.CFG.server.sessionSecret,
+  store: new MongoStore({      
+    mongoose_connection : app.dao.getConnection()
+  })
+}));
+
+restapi.use(passport.initialize());
+restapi.use(passport.session());
+restapi.use(jsonp.middleware());
+restapi.disable('x-powered-by');
 
 // export app everywhere
 module.exports.app = app;
@@ -195,22 +198,43 @@ if (cluster.isMaster) {
     }, null, true, GLOBAL.CFG.timezone);   
   });
 
+  cluster.on('disconnect', function(worker) {
+    app.logmessage('Worker ' + worker.id + ' dropped.  Respawning.', 'error');
+    cluster.fork();
+  });
+
 } else {
+  var domain = require('domain');
+  
   workerId = cluster.worker.workerID;
   app.logmessage('BIPIO:STARTED:' + new Date());
   helper.tldtools.init(
-  function() {
-    app.logmessage('TLD:UP');
-  },
-  function(body) {
-    app.logmessage('TLD:Cache fail - ' + body, 'error')
-  }
-);
+    function() {
+      app.logmessage('TLD:UP');
+    },
+    function(body) {
+      app.logmessage('TLD:Cache fail - ' + body, 'error')
+    }
+  );
 
   app.dao.on('ready', function(dao) {
+    var d = domain.create();
+    d.on('error', function(er) {
+      var killtimer = setTimeout(function() {
+        process.exit(1);
+      }, 10000);
+      
+      killtimer.unref();
+      
+      restapi.close();
+      cluster.worker.disconnect();
+    });
+    
     require('./router').init(restapi, dao);
+    
     restapi.listen(GLOBAL.CFG.server.port, GLOBAL.CFG.server.host, function() {
       app.logmessage('Listening on :' + GLOBAL.CFG.server.port + ' in "' + restapi.settings.env + '" mode...');
+      restapi.use(errorHandler);      
     });
   });
 }
